@@ -21,6 +21,13 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+/*
+ * Portions Copyright © 2024 HaptX Incorporated
+ *
+ * 2024-10-11: `usbdk_do_bulk_transfer` now returns LIBUSB_ERROR_NO_DEVICE
+ *             when the device is no longer present.
+ */
+
 #include <config.h>
 
 #include <windows.h>
@@ -560,6 +567,7 @@ static int usbdk_do_bulk_transfer(struct usbi_transfer *itransfer)
 	struct usbdk_transfer_priv *transfer_priv = get_usbdk_transfer_priv(itransfer);
 	OVERLAPPED *overlapped = get_transfer_priv_overlapped(itransfer);
 	TransferResult transferRes;
+	DWORD error_code;
 
 	transfer_priv->request.Buffer = (PVOID64)transfer->buffer;
 	transfer_priv->request.BufferLength = transfer->length;
@@ -588,8 +596,18 @@ static int usbdk_do_bulk_transfer(struct usbi_transfer *itransfer)
 	case TransferSuccessAsync:
 		break;
 	case TransferFailure:
-		usbi_err(TRANSFER_CTX(transfer), "ReadPipe/WritePipe failed: %s", windows_error_str(0));
-		return LIBUSB_ERROR_IO;
+		error_code = GetLastError();
+		switch (error_code) {
+			case ERROR_FILE_NOT_FOUND:
+			case ERROR_DEVICE_NOT_CONNECTED:
+			case ERROR_NO_SUCH_DEVICE:
+			case ERROR_BAD_COMMAND:
+				usbi_dbg(TRANSFER_CTX(transfer), "detected device removed");
+				return LIBUSB_ERROR_NO_DEVICE;
+			default:
+				usbi_err(TRANSFER_CTX(transfer), "ReadPipe/WritePipe failed: %s", windows_error_str(error_code));
+				return LIBUSB_ERROR_IO;
+		}
 	}
 
 	return LIBUSB_SUCCESS;

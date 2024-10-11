@@ -23,6 +23,13 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+/*
+ * Portions Copyright © 2024 HaptX Incorporated
+ *
+ * 2024-10-11: `winusbx_submit_bulk_transfer` now returns LIBUSB_ERROR_NO_DEVICE
+ *             when the device is no longer present.
+ */
+
 #include <config.h>
 
 #include <windows.h>
@@ -3078,6 +3085,7 @@ static int winusbx_submit_bulk_transfer(int sub_api, struct usbi_transfer *itran
 	OVERLAPPED *overlapped;
 	BOOL ret;
 	int current_interface;
+	DWORD error_code;
 
 	CHECK_WINUSBX_AVAILABLE(sub_api);
 
@@ -3119,9 +3127,21 @@ static int winusbx_submit_bulk_transfer(int sub_api, struct usbi_transfer *itran
 		ret = WinUSBX[sub_api].WritePipe(winusb_handle, transfer->endpoint, transfer->buffer, transfer->length, NULL, overlapped);
 	}
 
-	if (!ret && GetLastError() != ERROR_IO_PENDING) {
-		usbi_err(TRANSFER_CTX(transfer), "ReadPipe/WritePipe failed: %s", windows_error_str(0));
-		return LIBUSB_ERROR_IO;
+	if (!ret) {
+		error_code = GetLastError();
+		if (error_code != ERROR_IO_PENDING) {
+			switch (error_code) {
+				case ERROR_FILE_NOT_FOUND:
+				case ERROR_DEVICE_NOT_CONNECTED:
+				case ERROR_NO_SUCH_DEVICE:
+				case ERROR_BAD_COMMAND:
+					usbi_dbg(TRANSFER_CTX(transfer), "detected device removed");
+					return LIBUSB_ERROR_NO_DEVICE;
+				default:
+					usbi_err(TRANSFER_CTX(transfer), "ReadPipe/WritePipe failed: %s", windows_error_str(error_code));
+					return LIBUSB_ERROR_IO;
+			}
+		}
 	}
 
 	return LIBUSB_SUCCESS;
